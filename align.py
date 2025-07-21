@@ -89,7 +89,7 @@ def match_keypoints(desc1, desc2):
     return good_matches
 
 
-def align_faces(reference_path, target_path, method='mediapipe'):
+def align_faces_v1(reference_path, target_path, method='mediapipe'):
     """
     使用选择的特征点方法进行人脸对齐
     :param reference_path: 基准图像路径
@@ -99,14 +99,12 @@ def align_faces(reference_path, target_path, method='mediapipe'):
     """
     # 读取图像
     ref_img = cv2.imread(reference_path)
+    if ref_img is None:
+        raise ValueError(f"无法读取图像文件: {reference_path}")
+
     target_img = cv2.imread(target_path)
-
-    if ref_img is None or target_img is None:
-        raise ValueError("无法读取图像文件")
-
-    # 获取所有关键点
-    ref_points = get_all_facial_landmarks(ref_img, method)
-    target_points = get_all_facial_landmarks(target_img, method)
+    if target_img is None:
+        raise ValueError(f"无法读取图像文件: {target_path}")
 
     # 添加调试信息
     # print(f"参考图像关键点形状: {ref_points.shape}")
@@ -114,12 +112,15 @@ def align_faces(reference_path, target_path, method='mediapipe'):
     # print(f"参考图像关键点数量: {len(ref_points)}")
     # print(f"目标图像关键点数量: {len(target_points)}")
 
-    # 检查关键点数量
-    if len(ref_points) < 10 or len(target_points) < 10:
-        raise RuntimeError(f"未检测到足够的关键点: ref={len(ref_points)}, target={len(target_points)}")
-
     # 对于SIFT方法，需要额外的匹配步骤
     if method == 'sift':
+        # 获取所有关键点
+        ref_points = get_all_facial_landmarks(ref_img, 'sift')
+        target_points = get_all_facial_landmarks(target_img, 'sift')
+
+        # 检查关键点数量
+        if len(ref_points) < 10 or len(target_points) < 10:
+            raise RuntimeError(f"未检测到足够的关键点: ref={len(ref_points)}, target={len(target_points)}")
         # 转换为灰度图
         ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
         target_gray = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
@@ -138,6 +139,13 @@ def align_faces(reference_path, target_path, method='mediapipe'):
         ref_points = np.float32([ref_kps[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
         target_points = np.float32([target_kps[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
     else:
+        # 获取所有关键点
+        ref_points = get_all_facial_landmarks(ref_img, 'mediapipe')
+        target_points = get_all_facial_landmarks(target_img, 'mediapipe')
+
+        # 检查关键点数量
+        if len(ref_points) < 10 or len(target_points) < 10:
+            raise RuntimeError(f"未检测到足够的关键点: ref={len(ref_points)}, target={len(target_points)}")
         # 对于MediaPipe，直接使用所有点
         ref_points = ref_points.reshape(-1, 1, 2)
         target_points = target_points.reshape(-1, 1, 2)
@@ -164,6 +172,133 @@ def align_faces(reference_path, target_path, method='mediapipe'):
     )
 
     return ref_img, aligned_img,  M, mask, ref_points, target_points
+
+
+def align_faces(reference_path, target_path, method='mediapipe'):
+    """
+    使用选择的特征点方法进行人脸对齐，自动回退机制
+
+    :param reference_path: 基准图像路径
+    :param target_path: 待对齐图像路径
+    :param method: 首选关键点检测方法 ('mediapipe' 或 'sift')
+    :return: 对齐后的图像和变换矩阵
+    """
+    # 读取图像
+    ref_img = cv2.imread(reference_path)
+    if ref_img is None:
+        raise ValueError(f"无法读取图像文件: {reference_path}")
+
+    target_img = cv2.imread(target_path)
+    if target_img is None:
+        raise ValueError(f"无法读取图像文件: {target_path}")
+
+    # 尝试首选方法
+    fallback_used = False
+    fallback_method = 'sift' if method == 'mediapipe' else 'mediapipe'
+
+    try:
+        # SIFT方法处理流程
+        if method == 'sift':
+            ref_points, target_points, success = process_sift_method(ref_img, target_img)
+            if not success:
+                raise RuntimeError(f"SIFT方法关键点不足")
+
+        # MediaPipe方法处理流程
+        else:
+            ref_points, target_points, success = process_mediapipe_method(ref_img, target_img)
+            if not success:
+                raise RuntimeError(f"MediaPipe方法关键点不足")
+
+    except Exception as e:
+        print(f"⚠️ {method}方法失败: {str(e)}，尝试回退到{fallback_method}方法")
+        fallback_used = True
+
+        # 回退到备选方法
+        if fallback_method == 'sift':
+            ref_points, target_points, success = process_sift_method(ref_img, target_img)
+            if not success:
+                raise RuntimeError(f"回退SIFT方法仍关键点不足")
+        else:
+            ref_points, target_points, success = process_mediapipe_method(ref_img, target_img)
+            if not success:
+                raise RuntimeError(f"回退MediaPipe方法仍关键点不足")
+
+    # 使用RANSAC计算最佳变换矩阵
+    M, mask = cv2.findHomography(
+        target_points,
+        ref_points,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=5.0,
+        confidence=0.99
+    )
+
+    if M is None:
+        raise RuntimeError("无法计算有效的变换矩阵")
+
+    # 应用投影变换
+    aligned_img = cv2.warpPerspective(
+        target_img,
+        M,
+        (ref_img.shape[1], ref_img.shape[0]),
+        flags=cv2.INTER_LANCZOS4,
+        borderMode=cv2.BORDER_REFLECT_101
+    )
+
+    # 记录实际使用的方法
+    actual_method = fallback_method if fallback_used else method
+
+    return ref_img, aligned_img, M, mask, ref_points, target_points
+    # return ref_img, aligned_img, M, mask, ref_points, target_points, actual_method
+
+
+# 辅助函数：处理SIFT方法
+def process_sift_method(ref_img, target_img):
+    """SIFT方法处理流程"""
+    # 获取所有关键点
+    ref_points = get_all_facial_landmarks(ref_img, 'sift')
+    target_points = get_all_facial_landmarks(target_img, 'sift')
+
+    # 检查关键点数量
+    if len(ref_points) < 10 or len(target_points) < 10:
+        return None, None, False
+
+    # 转换为灰度图
+    ref_gray = cv2.cvtColor(ref_img, cv2.COLOR_BGR2GRAY)
+    target_gray = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
+
+    # 检测关键点和描述符
+    ref_kps, ref_desc = sift.detectAndCompute(ref_gray, None)
+    target_kps, target_desc = sift.detectAndCompute(target_gray, None)
+
+    # 匹配关键点
+    matches = match_keypoints(ref_desc, target_desc)
+
+    if len(matches) < 10:
+        return None, None, False
+
+    # 获取匹配点的坐标
+    ref_points = np.float32([ref_kps[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
+    target_points = np.float32([target_kps[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
+
+    return ref_points, target_points, True
+
+
+# 辅助函数：处理MediaPipe方法
+def process_mediapipe_method(ref_img, target_img):
+    """MediaPipe方法处理流程"""
+    # 获取所有关键点
+    ref_points = get_all_facial_landmarks(ref_img, 'mediapipe')
+    target_points = get_all_facial_landmarks(target_img, 'mediapipe')
+
+    # 检查关键点数量
+    if len(ref_points) < 10 or len(target_points) < 10:
+        return None, None, False
+
+    # 对于MediaPipe，直接使用所有点
+    ref_points = ref_points.reshape(-1, 1, 2)
+    target_points = target_points.reshape(-1, 1, 2)
+
+    return ref_points, target_points, True
 
 
 def visualize_alignment(ref_img, aligned_img, ref_points, target_points, M, mask, method='mediapipe'):
@@ -235,11 +370,11 @@ def visualize_alignment(ref_img, aligned_img, ref_points, target_points, M, mask
 
 
 if __name__ == "__main__":
-    reference_path = r'images2025-07-08\00eafc9b145f40f49ea4c236c8f549a6\00eafc9b145f40f49ea4c236c8f549a6-20230916-Rgb_Middle_T.jpg'
-    target_path = r'images2025-07-08\00eafc9b145f40f49ea4c236c8f549a6\00eafc9b145f40f49ea4c236c8f549a6-20231022-Rgb_Middle_T.jpg'
+    reference_path = r'../images2025-07-08\00eafc9b145f40f49ea4c236c8f549a6\00eafc9b145f40f49ea4c236c8f549a6-20230916-Rgb_Middle_T.jpg'
+    target_path = r'../images2025-07-08\00eafc9b145f40f49ea4c236c8f549a6\00eafc9b145f40f49ea4c236c8f549a6-20231022-Rgb_Middle_T.jpg'
 
     # 选择关键点检测方法: 'mediapipe' 或 'sift'
-    method = 'sift'  # 可以更改为 'mediapipe' 进行对比
+    method = 'mediapipe'  # 可以更改为 'mediapipe' 进行对比
 
     try:
         # 获取对齐结果和点阵
