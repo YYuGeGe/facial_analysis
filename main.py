@@ -108,11 +108,11 @@ def count_white_pixels(roi_mask, roi_points_mask):
     if len(roi_points_mask.shape) == 3 and roi_points_mask.shape[2] == 3:
         roi_points_mask = cv2.cvtColor(roi_points_mask, cv2.COLOR_BGR2GRAY)
 
-    cv2.namedWindow('roi_mask', 2)
-    cv2.imshow('roi_mask', roi_mask)
-    cv2.namedWindow('roi_points_mask', 2)
-    cv2.imshow('roi_points_mask', roi_points_mask)
-    cv2.waitKey()
+    # cv2.namedWindow('roi_mask', 2)
+    # cv2.imshow('roi_mask', roi_mask)
+    # cv2.namedWindow('roi_points_mask', 2)
+    # cv2.imshow('roi_points_mask', roi_points_mask)
+    # cv2.waitKey()
 
     region_total_pixels = cv2.countNonZero(roi_mask)
     region_white_count = cv2.countNonZero(roi_points_mask)
@@ -304,18 +304,22 @@ def facial_analysis(star_rgb_image_path, star_red_image_path, end_rgb_image_path
 
     # step 6: show results
     print('==========================================')
-    ref_values = list(ref_ration_results.values())
-    if ref_values:
-        total_pixels = sum(ref_values[0])
+    ref_total_whites = 0
+    ref_total_pixels = 0
     for key, value in ref_ration_results.items():
-        print(key, 100 * value[1] / total_pixels)
+        print(key, 100 * value[1] / value[0])
+        ref_total_pixels += value[0]
+        ref_total_whites += value[1]
+    print('total_pixels: ', ref_total_pixels, 'total_writes: ', ref_total_whites, 'percentage: ', ref_total_whites / ref_total_pixels)
 
     print('==========================================')
-    aligned_values = list(aligned_ration_results.values())
-    if aligned_values:
-        total_pixels = sum(aligned_values[0])
+    aligned_total_whites = 0
+    aligned_total_pixels = 0
     for key, value in aligned_ration_results.items():
-        print(key, 100 * value[1] / total_pixels)
+        print(key, 100 * value[1] / value[0])
+        aligned_total_pixels += value[0]
+        aligned_total_whites += value[1]
+    print('total_pixels: ', aligned_total_pixels, 'total_writes: ', aligned_total_whites, 'percentage: ', aligned_total_whites / aligned_total_pixels)
 
 
 if __name__ == '__main__':
